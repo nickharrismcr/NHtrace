@@ -6,9 +6,7 @@ Created on 27 Jul 2017
 
 import re, pyparsing as pp, pprint, tests
 
-#pp.ParserElement.enablePackrat()
-
-
+#TODO : return trace show actual returned values where printable 
 
 re_func=re.compile("(func|function)")
 re_proc=re.compile("(proc|procedure)") 
@@ -16,6 +14,7 @@ re_class=re.compile("class")
 re_select=re.compile("[ \t]select[ \t]")
 re_update=re.compile("[ \t]update[ \t]")
 re_comment=re.compile("--.*")
+re_return=re.compile("[ \t]return[ \t$\(]")
 
 #------------------------------------------------------------------------------------------------------------     
 # grammar definition
@@ -38,13 +37,12 @@ BOOLEAN=pp.Keyword("boolean")
 DATE=pp.Keyword("date")
 TEXT=pp.Keyword("text")
 ARRAY=pp.Keyword("array")
+RETURN=pp.Keyword("return")
 RETURNS=pp.Keyword("returns")
 PUBLIC=pp.Keyword("public") 
 VIRTUAL=pp.Keyword("virtual") 
 FUNC=pp.oneOf("func function") 
 PROC=pp.oneOf("proc procedure") 
-FUNC=FUNC.setResultsName("function")
-PROC=PROC.setResultsName("procedure")
 OF=pp.Keyword("of")
 SELECT=pp.Keyword("select")
 UPDATE=pp.Keyword("update")
@@ -107,6 +105,10 @@ function= pp.Optional(PUBLIC) + \
         RETURNS + \
         returntypes +\
         "{"
+        
+ppreturn=RETURN +\
+         pp.SkipTo("}",include=True)
+
 
 procedure=pp.Optional(PUBLIC) + \
         pp.Optional(VIRTUAL) + \
@@ -148,8 +150,8 @@ def process(parsers,code_block,parent):
     out=[]
     
     while len(code_block)>0:
-        line=code_block.splitlines()[0]
-        line=re_comment.sub("",line)
+        ll=code_block.splitlines()[0]
+        line=re_comment.sub("",ll)
         
         match=0
         if re_class.search(line):
@@ -176,6 +178,16 @@ def process(parsers,code_block,parent):
                 body,rest=get_to_matching_brace(code_block)
                 code_block=rest 
                 out.append(process(parsers,body,namespace))
+                match=1
+                break
+        
+        elif re_return.search(line):
+            
+            for toks,start,end in parsers["return"].scanString(code_block):
+                matched=code_block[start:end]
+                out.append( "return from " + parent ) #+  str(toks["return_values"]))             
+                out.append(code_block[0:start]+matched)     #keeps indent 
+                code_block=code_block[end:]   
                 match=1
                 break
             
@@ -222,33 +234,37 @@ def process(parsers,code_block,parent):
                 break     
             
         if match==0:
-            out.append(line)
+            out.append(ll)
             code_block="\n".join(code_block.splitlines()[1:])
    
     return "\n".join(out)
     
 #------------------------------------------------------------------------------------------------------------
-myfile="request.v"
-textfile=open(myfile,"r")
-text=textfile.read()
-namespace=myfile.split(".")[0]
+ 
+def main():
+    myfile="request.v"
+    textfile=open(myfile,"r")
+    text=textfile.read()
+    namespace=myfile.split(".")[0]
+    
+    parsers={ 
+              "function"   : function,
+              "procedure"  : procedure,
+              "select"     : select,
+              "update"     : update,
+              "classdef"   : classdef,
+              "return"     : ppreturn
+            }
+    
+    res=process( parsers, text, namespace)
+    with open("parse.out","w") as outf:
+        print >>outf,res 
+    
+    print res 
 
-parsers={ 
-          "function"   : function,
-          "procedure"  : procedure,
-          "select"     : select,
-          "update"     : update,
-          "classdef"   : classdef 
-        }
 
-res=process( parsers, text, namespace)
-with open("parse.out","w") as outf:
-    print >>outf,res 
-
-print res 
-
-
-
+if __name__=="__main__":
+    main()
 
 
    
