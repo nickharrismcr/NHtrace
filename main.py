@@ -155,6 +155,7 @@ def debug(txt):
 #------------------------------------------------------------------------------------------------------------     
 def def_trace(which, name, param_list, return_types ):
     
+    # returns 4gl trace call statement to add to the .v 
     # line numbers will be substituted once we've finished the main processing
     # easier that way with all the recursion going on....
     
@@ -197,7 +198,7 @@ def def_trace(which, name, param_list, return_types ):
               
     elif which=="return":
         
-        # return values. only trace them if we have a simple value or list of values.
+        # return values. only trace them if we have a simple value or tuple of values.
         # no expressions or function calls allowed. 
         
         try:
@@ -214,6 +215,7 @@ def def_trace(which, name, param_list, return_types ):
                     p1+="[<>]"
                     p2+='"_"'
             
+            # bin the last comma
             if len(p2)>0 and p2[-1]==",":
                 p2=p2[:-1]
                      
@@ -270,6 +272,8 @@ def get_to_matching_brace(code_block):
 #------------------------------------------------------------------------------------------------------------     
 def check(window):
     
+    # quick searches on the current source window to see if we're at a class/proc/func/select etc 
+    
     line0=re_comment.sub("",window[0])
     line="".join([ re_comment.sub("",i) for i in window ])
     
@@ -288,7 +292,7 @@ def check(window):
     
     return None 
 #------------------------------------------------------------------------------------------------------------     
-def process(parsers,what,code_block,parent,parent_ret_types):
+def process(parsers,parent,code_block,parent_name,parent_ret_types):
     
     '''  
     check a three line lookahead from the current line for class|function|procedure defs 
@@ -299,7 +303,7 @@ def process(parsers,what,code_block,parent,parent_ret_types):
     '''
     
     out=[] 
-    debug("%s %s " % (what,parent))
+    debug("%s %s " % (parent,parent_name))
     
     while len(code_block)>0:
        
@@ -312,32 +316,31 @@ def process(parsers,what,code_block,parent,parent_ret_types):
         line_match=check(window)
         if line_match != None: 
             
-            debug(what+"|"+line_match)
+            debug(parent+"|"+line_match)
             
             if line_match == "return" :
-                if what=="function": 
-                    for toks,start,end in parsers[line_match].scanString(code_block):
+                if parent=="function": 
+                    for parse_result,start,end in parsers[line_match].scanString(code_block):
                         matched=code_block[start:end]   
-                        ret_values=toks["return_values"] 
-                        out.append(def_trace(line_match,parent,ret_values,parent_ret_types))         
+                        ret_values=parse_result["return_values"] 
+                        out.append(def_trace(line_match,parent_name,ret_values,parent_ret_types))         
                         out.append(code_block[0:start]+matched)     #keeps indent 
                         code_block=code_block[end:]
-                        namespace=parent
+                        namespace=parent_name
                         match=1
                         break
             
             else:
                  
-                for toks,start,end in parsers[line_match].scanString(code_block):
-                    
+                for parse_result,start,end in parsers[line_match].scanString(code_block):
                     matched=code_block[start:end]            
                     out.append(code_block[0:start]+matched)     #keeps indent 
                     code_block=code_block[end:]
-                    dot="->" if what=="class" else "."
-                    namespace=parent+dot+mystr(toks[line_match])
-                    params=toks["parameter_list"] if line_match in ("procedure","function") else None
+                    dot="->" if parent=="class" else "."
+                    namespace=parent_name+dot+mystr(parse_result[line_match])
+                    params=parse_result["parameter_list"] if line_match in ("procedure","function") else None
                     out.append(def_trace(line_match,namespace,params,None))
-                    ret_types=toks["return_types"] if line_match=="function" else None
+                    ret_types=parse_result["return_types"] if line_match=="function" else None
                     body,rest=get_to_matching_brace(code_block)
                     code_block=rest
                     out.append(process(parsers,line_match,body,namespace,ret_types))
