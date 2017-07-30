@@ -2,16 +2,33 @@
 Created on 27 Jul 2017
 
 @author: nick
+
+Add debug trace to a new horizon .v sourcefile with line number, full namespace and call/return parameters
+NB traced code should NOT be released live or checked into version control. 
+
+Uses pyparsing library 
+http://pyparsing.wikispaces.com
+
 '''
 #------------------------------------------------------------------------------------------------------------     
-import re, pyparsing as pp    #, tests
+import sys, re, pyparsing as pp, datetime, shutil, unittest, tests 
 from optparse import OptionParser 
 #------------------------------------------------------------------------------------------------------------     
 
 tracecall='call debug.DebugNL(("%s",%s))'
-printables={}
-for i in ["small number","large number","number","string","boolean","date","time","money","text" ]:
-    printables[i]=True 
+
+printables={
+            "small number":True,
+            "large number":True,
+            "number":True,
+            "string":True,
+            "boolean":True,
+            "date":True,
+            "time":True,
+            "money":True,
+            "text":True
+           }
+
 debugmode=False 
 
 #------------------------------------------------------------------------------------------------------------     
@@ -30,6 +47,12 @@ re_remove_list=re.compile("[\[\]']")
 # pyparsing grammar definition 
 #------------------------------------------------------------------------------------------------------------     
 
+# result names are attached to the parsers matching the function/procedure/class names and sql tablenames.
+# e.g  classname=pp.Word(pp.alphanums+"_").setResultsName("class") 
+# the returned string from the check() function will be one of these names, this (a) selects the 
+# parser object to use from the parsers dictionary and (b) provides the key when accessing the parse result
+# object to pull out the name. 
+
 # literals and keywords 
 OPB=pp.Literal("(").suppress()
 CLB=pp.Literal(")").suppress()
@@ -42,7 +65,7 @@ SMALL=pp.Keyword("small")
 NUMBER=pp.Keyword("number")
 LARGENUMBER=pp.originalTextFor(LARGE+NUMBER)
 SMALLNUMBER=pp.originalTextFor(SMALL+NUMBER)
-STRING=pp.Keyword("string")
+STRING=pp.Keyword("string")+pp.Optional("length"+pp.Word(pp.nums))
 BOOLEAN=pp.Keyword("boolean")
 DATE=pp.Keyword("date")
 TEXT=pp.Keyword("text")
@@ -63,6 +86,7 @@ ONE=pp.Keyword("one")
 STAR=pp.Literal("*")
 UNIQUE=pp.Keyword("unique")
 CLASS=pp.Keyword("class")
+dblDashComment = pp.Regex(r"--(?:\\\n|[^\n])*").setName("-- comment")
 
 #variable/label name
 name=pp.Word(pp.alphanums+"_"+".")
@@ -88,6 +112,7 @@ DEFARRAY=ARRAY+OF+types
 paramtype=pp.Group( (types ^ DEFARRAY) + pp.Optional(WITHNULL))
 param= (name + IS + paramtype) 
 param_list=pp.Group( OPB + pp.Optional(pp.delimitedList(param, ",")) + CLB).setResultsName("parameter_list") 
+param_list.ignore(dblDashComment)
 
 # return compounds 
 single_ret=paramtype
@@ -146,28 +171,99 @@ update=UPDATE+ \
 
 [ f.parseWithTabs() for f in [ function, procedure, return_, select, update, class_ ]]
 
-#------------------------------------------------------------------------------------------------------------     
-#------------------------------------------------------------------------------------------------------------  
+##------------------------------------------------------------------------------------------------------------  
 def debug(txt):
     if debugmode:
+
         print txt      
-        
+
 #------------------------------------------------------------------------------------------------------------     
-def def_trace(which, name, param_list, return_types ):
+def get_parameter_value_strings(param_list,globals_,p1,p2):
+    
+    param_count=len(param_list)/2
+    for i in range(0,param_count):
+        param_name=param_list[i*2]
+        param_type=param_list[i*2+1]
+        p1+="[<>]" 
+        # only attempt to trace basic types. dont trace if "with null" 
+        if len(param_type)==1 and param_type[0] in printables:
+            p2+=param_name+","  
+        else:
+            p2+='"_",'
+    
+     
+    for g in globals_:
+        p1+=" %s [<>]" % g
+        p2+=g+","
+    
+    # bin last comma    
+    if len(p2)>0 and p2[-1]==",":
+        p2=p2[:-1]
+        
+    return p1,p2
+
+#------------------------------------------------------------------------------------------------------------     
+def get_return_value_string(param_list, return_types, globals_, p1,p2 ):
+
+    # return values. only trace them if we have a simple value or tuple of values.
+    # no expressions or function calls allowed, avoids side effects or compilation issues 
+    
+    try:
+        res=simple_return.parseString(param_list)
+        for n,t in enumerate(return_types ):
+            if t[0] in printables:
+                if n < len(res):
+                    if res[n]=="null":
+                        p1+="[null]"
+                    else:
+                        p1+="[<>]"
+                        p2+=res[n]+","
+            else:
+                p1+="[<>]"
+                p2+='"_"'
+        
+        for g in globals_:
+            p1+=" %s [<>]" % g
+            p2+=g+","
+        
+        # bin the last comma
+        if len(p2)>0 and p2[-1]==",":
+            p2=p2[:-1]
+                 
+    except:
+        # match failed
+        pass
+    
+    return p1,p2 
+#------------------------------------------------------------------------------------------------------------     
+def get_return_string(globals_, p1,p2 ):
+    
+    for g in globals_:
+        p1+=" %s [<>]" % g
+        p2+=g+","
+    
+    # bin the last comma
+    if len(p2)>0 and p2[-1]==",":
+        p2=p2[:-1]
+
+    return p1,p2 
+
+#------------------------------------------------------------------------------------------------------------     
+def def_trace(which, name, param_list, return_types, globals_ ):
     
     # returns 4gl trace call statement to add to the .v 
-    # line numbers will be substituted once we've finished the main processing
+    # @line@ numbers will be substituted once we've finished the main processing
     # easier that way with all the recursion going on....
     
     module=name.split(".")[0]+".v"
     where=".".join(name.split(".")[1:]) 
     
     strings={
-             "procedure" : "%s : line %s : %s %s " % (module,"@line@",which,where),
-             "function"  : "%s : line %s : %s %s " % (module,"@line@",which,where),
-             "select"    : "%s : line %s : %s %s " % (module,"@line@",where,which),
-             "update"    : "%s : line %s : %s %s " % (module,"@line@",where,which),
-             "return"    : "%s : line %s : return from %s " % (module,"@line@",where),
+             "procedure" : "%s : %s : p %s " % (module,"@line@",where),
+             "function"  : "%s : %s : f %s " % (module,"@line@",where),
+             "select"    : "%s : %s : %s %s " % (module,"@line@",where,which),
+             "update"    : "%s : %s : %s %s " % (module,"@line@",where,which),
+             "return"    : "%s : %s : ret %s " % (module,"@line@",where),
              }
     
     if not which in strings:
@@ -178,51 +274,15 @@ def def_trace(which, name, param_list, return_types ):
     
     if which in ("function","procedure"):
         
-        # parameter values 
-        
-        param_count=len(param_list)/2
-        for i in range(0,param_count):
-            param_name=param_list[i*2]
-            param_type=param_list[i*2+1]
-            p1+="[<>]" 
-            # only attempt to trace basic types. dont trace if "with null" 
-            if len(param_type)==1 and param_type[0] in printables:
-                p2+=param_name+","  
-            else:
-                p2+='"_",'
-        
-        if len(p1)>0 and p1[-1]==",":
-            p1=p1[:-1]
-        if len(p2)>0 and p2[-1]==",":
-            p2=p2[:-1]
+        p1,p2=get_parameter_value_strings(param_list,globals_,p1,p2)
               
     elif which=="return":
         
-        # return values. only trace them if we have a simple value or tuple of values.
-        # no expressions or function calls allowed. 
-        
-        try:
-            res=simple_return.parseString(param_list)
-            for n,t in enumerate(return_types ):
-                if t[0] in printables:
-                    if n < len(res):
-                        if res[n]=="null":
-                            p1+="[null]"
-                        else:
-                            p1+="[<>]"
-                            p2+=res[n]+","
-                else:
-                    p1+="[<>]"
-                    p2+='"_"'
+        if return_types != None:
+            p1,p2=get_return_value_string(param_list, return_types, globals_, p1,p2 )
+        else:
+            p1,p2=get_return_string(globals_,p1,p2)
             
-            # bin the last comma
-            if len(p2)>0 and p2[-1]==",":
-                p2=p2[:-1]
-                     
-        except:
-            # match failed
-            pass
-        
     else:
         
         # sql statements. nothing to add 
@@ -292,14 +352,16 @@ def check(window):
     
     return None 
 #------------------------------------------------------------------------------------------------------------     
-def process(parsers,parent,code_block,parent_name,parent_ret_types):
+def process(parsers,parent,code_block,parent_name,globals_,parent_ret_types):
     
     '''  
     check a three line lookahead from the current line for class|function|procedure defs 
     or the current line for return|select|update statements
     for speed, function and procedure checks use a small parser, rest use regexps 
-    if match found, run it through the relevant full parser to pull out the required items so we can insert a trace line 
-    to the outputted code 
+    if match found, run it through the relevant full parser to pull out the required items so we can insert
+    a trace line to the outputted code 
+    
+    this will be recursively called when handling nested statement bodies 
     '''
     
     out=[] 
@@ -319,31 +381,44 @@ def process(parsers,parent,code_block,parent_name,parent_ret_types):
             debug(parent+"|"+line_match)
             
             if line_match == "return" :
+                
                 if parent=="function": 
                     for parse_result,start,end in parsers[line_match].scanString(code_block):
+                        
+                        debug("parsed "+line_match)
                         matched=code_block[start:end]   
                         ret_values=parse_result["return_values"] 
-                        out.append(def_trace(line_match,parent_name,ret_values,parent_ret_types))         
+                        # add trace line 
+                        out.append(def_trace(line_match,parent_name,ret_values,parent_ret_types,globals_))         
                         out.append(code_block[0:start]+matched)     #keeps indent 
                         code_block=code_block[end:]
                         namespace=parent_name
                         match=1
                         break
-            
+                    
+                elif parent=="procedure":
+                    
+                    # add trace line 
+                    out.append(def_trace(line_match,parent_name,None,None,globals_))         
+                    
             else:
                  
                 for parse_result,start,end in parsers[line_match].scanString(code_block):
+                    
+                    debug("parsed "+line_match)
                     matched=code_block[start:end]            
                     out.append(code_block[0:start]+matched)     #keeps indent 
                     code_block=code_block[end:]
                     dot="->" if parent=="class" else "."
                     namespace=parent_name+dot+mystr(parse_result[line_match])
                     params=parse_result["parameter_list"] if line_match in ("procedure","function") else None
-                    out.append(def_trace(line_match,namespace,params,None))
+                    # add trace line 
+                    out.append(def_trace(line_match,namespace,params,None,globals_))
                     ret_types=parse_result["return_types"] if line_match=="function" else None
                     body,rest=get_to_matching_brace(code_block)
                     code_block=rest
-                    out.append(process(parsers,line_match,body,namespace,ret_types))
+                    # recursive call handles nested block 
+                    out.append( process(parsers,line_match,body,namespace,globals_,ret_types) )
                     match=1
                     break
 
@@ -357,21 +432,83 @@ def process(parsers,parent,code_block,parent_name,parent_ret_types):
 #------------------------------------------------------------------------------------------------------------
 def sub_line_numbers(l):
     
+    # replace @line@ placeholders with actual source linenumbers 
+    
     ll=l.splitlines()
     for i in range(0,len(ll)):
         ll[i]=re_line.sub(str(i+1),ll[i])
        
     return "\n".join(ll)
+ 
+#------------------------------------------------------------------------------------------------------------
+def restore_saved(filename):
+    
+    datestamp=datetime.datetime.now().strftime("%Y%m%d")
+    backup=filename+".orig."+datestamp
+    shutil.move(backup,filename)
+    print "restored %s to %s " % (backup,filename)
+
+#------------------------------------------------------------------------------------------------------------
+def backup_source(filename):     
+    
+    datestamp=datetime.datetime.now().strftime("%Y%m%d")
+    backup=filename+".orig."+datestamp
+    shutil.copyfile(filename,backup)
+    return backup
+
+
+#------------------------------------------------------------------------------------------------------------
+def get_globals_to_watch(list_):
+    
+    if list_ is None:
+        return []
+    if "," in list_:
+        return list_.split(",")
+    else:
+        return [ list_ ]
     
 #------------------------------------------------------------------------------------------------------------
-  
+class Test(unittest.TestCase):
+    
+    def test_strings(self):
+        
+        def diff(a,b):
+            import difflib
+            return "\n".join([ i for i in difflib.context_diff(a.splitlines(),b.splitlines())])
+        
+        parsers={ 
+              "function"   : function,
+              "procedure"  : procedure,
+              "select"     : select,
+              "update"     : update,
+              "class"      : class_,
+              "return"     : return_
+            }
+    
+        for s in tests.__dict__.keys():
+            if s[0:2]!="__" and s[0:3]!="out":
+                print >>sys.stderr, (s)
+                res=process( parsers,"toplevel", tests.__dict__[s] , s , [], None)
+                res=sub_line_numbers(res)
+                expected=tests.__dict__["out_"+s]
+                d=diff(res,expected)
+                assert len(d)==0, "%s fail : \n%s " % (s,d)
+                
+#------------------------------------------------------------------------------------------------------------ 
+#------------------------------------------------------------------------------------------------------------------------------        
+#------------------------------------------------------------------------------------------------------------------------------        
+
 def main():
     
     global debugmode 
     optparse = OptionParser()
     optparse.add_option("-d", "--debug", action="store_true", dest="debug", default=False)
+    optparse.add_option("-r", "--restore", action="store_true", dest="restore", default=False)
+    optparse.add_option("-g", "--global", dest="globalnames", default=None )
+    optparse.add_option("-t", "--test", action="store_true", dest="test", default=False)
     (options, args) = optparse.parse_args()
-    debugmode=options.debug    
+    debugmode=options.debug
+    globals_=get_globals_to_watch(options.globalnames)
     
     parsers={ 
               "function"   : function,
@@ -382,18 +519,30 @@ def main():
               "return"     : return_
             }
     
-    for f in args:
-        
-        textfile=open(f,"r")
-        text=textfile.read()
-        namespace=f.split(".")[0]
-        res=process( parsers,"toplevel", text , namespace, None)
-        res=sub_line_numbers(res)
-        
-        with open("parse.out","w") as outf:
-            print >>outf,res 
-        print res 
-        
+    if options.test:
+        unittest.main(argv=sys.argv[:1])
+    else:
+        for f in args:
+            
+            if options.restore:
+                restore_saved(f)
+            else:
+                backup=backup_source(f)
+                textfile=open(f,"r")
+                text=textfile.read()
+                namespace=f.split(".")[0]
+                res=process( parsers,"toplevel", text , namespace, globals_, None)
+                res=sub_line_numbers(res)
+                with open(f+".out","w") as outf:
+                    print >>outf,res 
+                shutil.move(f+".out",f)
+                print "Trace added to %s : backup is %s " % (f, backup)
+                
+#------------------------------------------------------------------------------------------------------------------------------        
+#------------------------------------------------------------------------------------------------------------------------------        
+#------------------------------------------------------------------------------------------------------------------------------        
+
 if __name__=="__main__":
+  
     main()
 
