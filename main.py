@@ -3,26 +3,36 @@ Created on 27 Jul 2017
 
 @author: nick
 '''
+#------------------------------------------------------------------------------------------------------------     
+import re, pyparsing as pp    #, tests
+from optparse import OptionParser 
+#------------------------------------------------------------------------------------------------------------     
 
-import re, pyparsing as pp, pprint, tests
+tracecall='call debug.DebugNL(("%s",%s))'
+printables={}
+for i in ["small number","large number","number","string","boolean","date","time","money","text" ]:
+    printables[i]=True 
+debugmode=False 
 
-#TODO : return trace show actual returned values where printable 
+#------------------------------------------------------------------------------------------------------------     
+# regexp defs
+#------------------------------------------------------------------------------------------------------------     
 
-re_func=re.compile("(func|function)")
-re_proc=re.compile("(proc|procedure)") 
-re_class=re.compile("class")
+re_class=re.compile("(public class|class)")
 re_select=re.compile("[ \t]select[ \t]")
 re_update=re.compile("[ \t]update[ \t]")
 re_comment=re.compile("--.*")
 re_return=re.compile("[ \t]return[ \t$\(]")
+re_line=re.compile("@line@")
+re_remove_list=re.compile("[\[\]']")
 
 #------------------------------------------------------------------------------------------------------------     
-# grammar definition
+# pyparsing grammar definition 
 #------------------------------------------------------------------------------------------------------------     
 
 # literals and keywords 
-OPB=pp.Literal("(") 
-CLB=pp.Literal(")") 
+OPB=pp.Literal("(").suppress()
+CLB=pp.Literal(")").suppress()
 WITH=pp.Keyword("with")
 NULL=pp.Keyword("null")
 WITHNULL=pp.originalTextFor(WITH+NULL)
@@ -56,79 +66,190 @@ CLASS=pp.Keyword("class")
 
 #variable/label name
 name=pp.Word(pp.alphanums+"_"+".")
-name.setName("name")
 
 #sql 
 astuple=AS+name 
-tablename=(pp.Optional(name+EQ).suppress()+name )
-tablename=tablename.setResultsName("tablename")
+select_tablename=(pp.Optional(name+EQ).suppress()+name ).setResultsName("select")
+update_tablename=(pp.Optional(name+EQ).suppress()+name ).setResultsName("update")
 tablefield=pp.Word(pp.alphanums+"_"+".")
 tablefields=pp.Optional(tablefield ^ pp.delimitedList(tablefield,","))
 
 #class   
 pptype=pp.Word(pp.alphanums+".")
-classname=pp.Word(pp.alphanums+"_")
-classname=classname.setResultsName("classname") 
+classname=pp.Word(pp.alphanums+"_").setResultsName("class") 
 
 # function/proc name 
-callname=pp.Word(pp.alphanums+"_")
-callname=callname.setResultsName("callname")
+funcname=pp.Word(pp.alphanums+"_").setResultsName("function")
+procname=pp.Word(pp.alphanums+"_").setResultsName("procedure")
 
 # parameter compounds 
 types=(NUMBER ^ LARGENUMBER ^ SMALLNUMBER ^ STRING ^ TEXT ^ DATE ^ BOOLEAN ^ pptype)
 DEFARRAY=ARRAY+OF+types
 paramtype=pp.Group( (types ^ DEFARRAY) + pp.Optional(WITHNULL))
-param= name + IS + paramtype
-param.setName("param")
-param_list=pp.Group( OPB + pp.Optional(pp.delimitedList(param, ",")) + CLB)
-param_list.setName("param_list")
-param_list=param_list.setResultsName("parameter_list")
+param= (name + IS + paramtype) 
+param_list=pp.Group( OPB + pp.Optional(pp.delimitedList(param, ",")) + CLB).setResultsName("parameter_list") 
 
-# return type compounds 
-single_ret=paramtype.copy() 
+# return compounds 
+single_ret=paramtype
 multi_ret=OPB + pp.delimitedList(paramtype,",") + CLB
-returntypes=single_ret #(multi_ret ^ single_ret)
-returntypes=returntypes.setResultsName("return_types")
+returntypes=pp.Group(multi_ret ^ single_ret).setResultsName("return_types")
+returnvalues=pp.SkipTo("}",include=True).setResultsName("return_values") 
 
-# top level parsers
+simple_return=name+pp.ZeroOrMore(pp.Suppress(",")+name)
 
-classdef = pp.Optional(PUBLIC)+ \
+#------------------------------------------------------------------------------------------------------------     
+# top level parsers.  the quick_ variants are for fast checking of the current 3 line code window 
+#------------------------------------------------------------------------------------------------------------     
+
+class_ = pp.Optional(PUBLIC)+ \
         CLASS + \
         classname + \
         pp.SkipTo("{",include=True )
+
+quick_function = pp.Optional(PUBLIC) + \
+        pp.Optional(VIRTUAL) + \
+        FUNC
         
 function= pp.Optional(PUBLIC) + \
         pp.Optional(VIRTUAL) + \
         FUNC + \
-        callname+ \
+        funcname+ \
         param_list + \
         RETURNS + \
         returntypes +\
         "{"
         
-ppreturn=RETURN +\
-         pp.SkipTo("}",include=True)
+return_=RETURN +\
+         returnvalues
+ 
 
-
+quick_procedure=pp.Optional(PUBLIC) + \
+        pp.Optional(VIRTUAL) + \
+        PROC 
+        
 procedure=pp.Optional(PUBLIC) + \
         pp.Optional(VIRTUAL) + \
         PROC + \
-        callname+ \
+        procname+ \
         param_list + \
         "{"
 
 select=SELECT+ \
         pp.SkipTo(FROM,True) + \
-        tablename+ \
+        select_tablename+ \
         pp.SkipTo("{",include=True)
         
 update=UPDATE+ \
         pp.Optional(astuple)+ \
-        tablename+ \
+        update_tablename+ \
         pp.SkipTo("{", include=True)
 
-[ f.parseWithTabs() for f in [ function, procedure, select, update, classdef ]]
- 
+[ f.parseWithTabs() for f in [ function, procedure, return_, select, update, class_ ]]
+
+#------------------------------------------------------------------------------------------------------------     
+#------------------------------------------------------------------------------------------------------------  
+def debug(txt):
+    if debugmode:
+        print txt      
+        
+#------------------------------------------------------------------------------------------------------------     
+def def_trace(which, name, param_list, return_types ):
+    
+    # line numbers will be substituted once we've finished the main processing
+    # easier that way with all the recursion going on....
+    
+    module=name.split(".")[0]+".v"
+    where=".".join(name.split(".")[1:]) 
+    
+    strings={
+             "procedure" : "%s : line %s : %s %s " % (module,"@line@",which,where),
+             "function"  : "%s : line %s : %s %s " % (module,"@line@",which,where),
+             "select"    : "%s : line %s : %s %s " % (module,"@line@",where,which),
+             "update"    : "%s : line %s : %s %s " % (module,"@line@",where,which),
+             "return"    : "%s : line %s : return from %s " % (module,"@line@",where),
+             }
+    
+    if not which in strings:
+        return ""
+    
+    p1=strings[which]
+    p2=""
+    
+    if which in ("function","procedure"):
+        
+        # parameter values 
+        
+        param_count=len(param_list)/2
+        for i in range(0,param_count):
+            param_name=param_list[i*2]
+            param_type=param_list[i*2+1]
+            p1+="[<>]" 
+            # only attempt to trace basic types. dont trace if "with null" 
+            if len(param_type)==1 and param_type[0] in printables:
+                p2+=param_name+","  
+            else:
+                p2+='"_",'
+        
+        if len(p1)>0 and p1[-1]==",":
+            p1=p1[:-1]
+        if len(p2)>0 and p2[-1]==",":
+            p2=p2[:-1]
+              
+    elif which=="return":
+        
+        # return values. only trace them if we have a simple value or list of values.
+        # no expressions or function calls allowed. 
+        
+        try:
+            res=simple_return.parseString(param_list)
+            for n,t in enumerate(return_types ):
+                if t[0] in printables:
+                    if n < len(res):
+                        if res[n]=="null":
+                            p1+="[null]"
+                        else:
+                            p1+="[<>]"
+                            p2+=res[n]+","
+                else:
+                    p1+="[<>]"
+                    p2+='"_"'
+            
+            if len(p2)>0 and p2[-1]==",":
+                p2=p2[:-1]
+                     
+        except:
+            # match failed
+            pass
+        
+    else:
+        
+        # sql statements. nothing to add 
+        
+        p1+="<>"
+        p2+='""'
+                
+    return tracecall % (p1,p2)
+
+#------------------------------------------------------------------------------------------------------------
+def mystr(item):    
+    return re_remove_list.sub("",str(item))
+
+#------------------------------------------------------------------------------------------------------------
+def check_func(line):
+    
+    try:
+        quick_function.parseString(line)
+        return True
+    except:
+        return False 
+#------------------------------------------------------------------------------------------------------------
+def check_proc(line):
+    
+    try:
+        quick_procedure.parseString(line)
+        return True
+    except:
+        return False 
 #------------------------------------------------------------------------------------------------------------     
 def get_to_matching_brace(code_block):
     
@@ -141,130 +262,135 @@ def get_to_matching_brace(code_block):
         if code_block[en]=="}": 
             br-=1
         if br==0:
-            return code_block[st:en+1],code_block[en+1:]
+            body=code_block[st:en+1]
+            rest=code_block[en+1:]
+            return body,rest
         en+=1
 
 #------------------------------------------------------------------------------------------------------------     
-def process(parsers,code_block,parent):
-      
-    out=[]
+def check(window):
+    
+    line0=re_comment.sub("",window[0])
+    line="".join([ re_comment.sub("",i) for i in window ])
+    
+    if re_class.search(line):
+        return "class"
+    elif check_func(line):
+        return "function"
+    elif check_proc(line):
+        return "procedure"
+    elif re_return.search(line0):
+        return "return"
+    elif re_select.search(line0):
+        return "select" 
+    elif re_update.search(line0):
+        return "update"
+    
+    return None 
+#------------------------------------------------------------------------------------------------------------     
+def process(parsers,what,code_block,parent,parent_ret_types):
+    
+    '''  
+    check a three line lookahead from the current line for class|function|procedure defs 
+    or the current line for return|select|update statements
+    for speed, function and procedure checks use a small parser, rest use regexps 
+    if match found, run it through the relevant full parser to pull out the required items so we can insert a trace line 
+    to the outputted code 
+    '''
+    
+    out=[] 
+    debug("%s %s " % (what,parent))
     
     while len(code_block)>0:
-        ll=code_block.splitlines()[0]
-        line=re_comment.sub("",ll)
-        
+       
+        ln=len(code_block)       
+        window_length = 3 if ln>2 else ln
+        window=code_block.splitlines()[0:window_length]
+        debug(">"+window[0])
         match=0
-        if re_class.search(line):
-            
-            for toks,start,end in parsers["classdef"].scanString(code_block):
-                matched=code_block[start:end]            
-                out.append(code_block[0:start]+matched)     #keeps indent 
-                code_block=code_block[end:]
-                namespace=parent+"."+str(toks["classname"])
-                body,rest=get_to_matching_brace(code_block)
-                code_block=rest 
-                out.append(process(parsers,body,namespace))
-                match=1
-                break
-            
-        elif re_func.search(line):
-
-            for toks,start,end in parsers["function"].scanString(code_block):
-                matched=code_block[start:end]            
-                out.append(code_block[0:start]+matched)     #keeps indent 
-                code_block=code_block[end:]
-                namespace=parent+"."+str(toks["callname"])
-                out.append( namespace + str(toks["parameter_list"]) + str(toks["return_types"]))
-                body,rest=get_to_matching_brace(code_block)
-                code_block=rest 
-                out.append(process(parsers,body,namespace))
-                match=1
-                break
         
-        elif re_return.search(line):
+        line_match=check(window)
+        if line_match != None: 
             
-            for toks,start,end in parsers["return"].scanString(code_block):
-                matched=code_block[start:end]
-                out.append( "return from " + parent ) #+  str(toks["return_values"]))             
-                out.append(code_block[0:start]+matched)     #keeps indent 
-                code_block=code_block[end:]   
-                match=1
-                break
+            debug(what+"|"+line_match)
             
-        elif re_proc.search(line):
- 
-            for toks,start,end in parsers["procedure"].scanString(code_block):
-                matched=code_block[start:end]
-                out.append(code_block[0:start]+matched)     #keeps indent 
-                code_block=code_block[end:]
-                namespace=parent+"."+str(toks["callname"])
-                out.append( namespace + str(toks["parameter_list"]))
-                body,rest=get_to_matching_brace(code_block)
-                code_block=rest
-                out.append(process(parsers,body,namespace))
-                match=1
-                break     
+            if line_match == "return" :
+                if what=="function": 
+                    for toks,start,end in parsers[line_match].scanString(code_block):
+                        matched=code_block[start:end]   
+                        ret_values=toks["return_values"] 
+                        out.append(def_trace(line_match,parent,ret_values,parent_ret_types))         
+                        out.append(code_block[0:start]+matched)     #keeps indent 
+                        code_block=code_block[end:]
+                        namespace=parent
+                        match=1
+                        break
             
-        elif re_select.search(line):
-
-            for toks,start,end in parsers["select"].scanString(code_block):
-                matched=code_block[start:end]
-                out.append(code_block[0:start]+matched)     #keeps indent 
-                code_block=code_block[end:]
-                namespace=parent+"."+str(toks["tablename"][0])
-                out.append( namespace + " select" )
-                body,rest=get_to_matching_brace(code_block)
-                code_block=rest
-                out.append(process(parsers,body,namespace))
-                match=1
-                break
+            else:
+                 
+                for toks,start,end in parsers[line_match].scanString(code_block):
                     
-        elif re_update.search(line):
+                    matched=code_block[start:end]            
+                    out.append(code_block[0:start]+matched)     #keeps indent 
+                    code_block=code_block[end:]
+                    dot="->" if what=="class" else "."
+                    namespace=parent+dot+mystr(toks[line_match])
+                    params=toks["parameter_list"] if line_match in ("procedure","function") else None
+                    out.append(def_trace(line_match,namespace,params,None))
+                    ret_types=toks["return_types"] if line_match=="function" else None
+                    body,rest=get_to_matching_brace(code_block)
+                    code_block=rest
+                    out.append(process(parsers,line_match,body,namespace,ret_types))
+                    match=1
+                    break
 
-            for toks,start,end in parsers["update"].scanString(code_block):
-                matched=code_block[start:end]
-                out.append(code_block[0:start]+matched)     #keeps indent 
-                code_block=code_block[end:]
-                namespace=parent+"."+toks["tablename"]
-                out.append( namespace + " update" )
-                body,rest=get_to_matching_brace(code_block)
-                code_block=rest
-                out.append(process(parsers,body,namespace))
-                match=1
-                break     
-            
         if match==0:
-            out.append(ll)
+           
+            out.append(window[0])
             code_block="\n".join(code_block.splitlines()[1:])
-   
+
     return "\n".join(out)
     
 #------------------------------------------------------------------------------------------------------------
- 
+def sub_line_numbers(l):
+    
+    ll=l.splitlines()
+    for i in range(0,len(ll)):
+        ll[i]=re_line.sub(str(i+1),ll[i])
+       
+    return "\n".join(ll)
+    
+#------------------------------------------------------------------------------------------------------------
+  
 def main():
-    myfile="request.v"
-    textfile=open(myfile,"r")
-    text=textfile.read()
-    namespace=myfile.split(".")[0]
+    
+    global debugmode 
+    optparse = OptionParser()
+    optparse.add_option("-d", "--debug", action="store_true", dest="debug", default=False)
+    (options, args) = optparse.parse_args()
+    debugmode=options.debug    
     
     parsers={ 
               "function"   : function,
               "procedure"  : procedure,
               "select"     : select,
               "update"     : update,
-              "classdef"   : classdef,
-              "return"     : ppreturn
+              "class"      : class_,
+              "return"     : return_
             }
     
-    res=process( parsers, text, namespace)
-    with open("parse.out","w") as outf:
-        print >>outf,res 
-    
-    print res 
-
-
+    for f in args:
+        
+        textfile=open(f,"r")
+        text=textfile.read()
+        namespace=f.split(".")[0]
+        res=process( parsers,"toplevel", text , namespace, None)
+        res=sub_line_numbers(res)
+        
+        with open("parse.out","w") as outf:
+            print >>outf,res 
+        print res 
+        
 if __name__=="__main__":
     main()
 
-
-   
