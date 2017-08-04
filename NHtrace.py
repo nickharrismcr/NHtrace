@@ -13,6 +13,7 @@ usage : NHtrace.py [--global var[,var]...][--restore][--debug][--test] sourcefil
 
 --global  : comma separated list of global variables to trace
 --restore : restore backup of source  
+--indent  : indent labels by call depth 
 --debug   : output debugging info
 --test    : run unit tests 
 
@@ -48,6 +49,8 @@ printables={
            }
 
 debugmode=False 
+checkmode=False
+indentmode=False 
 
 #------------------------------------------------------------------------------------------------------------     
 # regexp defs
@@ -205,12 +208,12 @@ def debug(txt):
         print txt      
 
 #------------------------------------------------------------------------------------------------------------     
-def get_parameter_value_strings(param_list,globals_,p1,p2):
+def get_parameter_value_strings(param_list,globals_,p1,p2 ):
     
     param_count=len(param_list)/2
 
     if param_count==0:
-	p1+="[<>]"
+        p1+="[<>]"
         p2+='""'
         return p1,p2 
 
@@ -246,29 +249,29 @@ def get_return_value_string(param_list, return_types, globals_, p1,p2 ):
 
     if re_notallowed.search(param_list)==None:
 
-	try:
-	    res=simple_return.parseString(param_list)
-	    for n,t in enumerate(return_types ):
-		if t[0] in printables:
-		    if n < len(res):
-			if res[n]=="null":
-			    p1+="[null]"
-			else:
-			    p1+="[<>]"
-			    p2+=res[n]+","
-		else:
-		    p1+="[<>]"
-		    p2+='"_",'
-	    
-	    for g in globals_:
-		p1+=" %s [<>]" % g
-		p2+=g+","
-	    
-		     
-	except:
-	    # match failed
-	    pass
-    
+        try:
+            res=simple_return.parseString(param_list)
+            for n,t in enumerate(return_types ):
+                if t[0] in printables:
+                    if n < len(res):
+                        if res[n]=="null":
+                            p1+="[null]"
+                        else:
+                            p1+="[<>]"
+                            p2+=res[n]+","
+                else:
+                    p1+="[<>]"
+                    p2+='"_",'
+            
+            for g in globals_:
+                p1+=" %s [<>]" % g
+                p2+=g+","
+            
+                 
+        except:
+            # match failed
+            pass
+        
     # bin the last comma
     if len(p2)>0 and p2[-1]==",":
         p2=p2[:-1]
@@ -291,7 +294,7 @@ def get_return_string(globals_, p1,p2 ):
     return p1,p2 
 
 #------------------------------------------------------------------------------------------------------------     
-def def_trace(which, name, param_list, return_types, globals_ ):
+def def_trace(which, name, param_list, return_types, globals_, indent ):
     
     # returns 4gl trace call statement to add to the .v 
     # @line@ numbers will be substituted once we've finished the main processing
@@ -299,13 +302,14 @@ def def_trace(which, name, param_list, return_types, globals_ ):
     
     module=name.split(".")[0]+".v"
     where=".".join(name.split(".")[1:]) 
+    indents=" "*indent 
     
     strings={
-             "procedure" : "%s : %s : p %s " % (module,"@line@",where),
-             "function"  : "%s : %s : f %s " % (module,"@line@",where),
-             "select"    : "%s : %s : %s %s " % (module,"@line@",where,which),
-             "update"    : "%s : %s : %s %s " % (module,"@line@",where,which),
-             "return"    : "%s : %s : ret %s " % (module,"@line@",where),
+             "procedure" : "%-12s : %s :%s p %s " % (module,"@line@",indents,where),
+             "function"  : "%-12s : %s :%s f %s " % (module,"@line@",indents,where),
+             "select"    : "%-12s : %s :%s %s %s " % (module,"@line@",indents,where,which),
+             "update"    : "%-12s : %s :%s %s %s " % (module,"@line@",indents,where,which),
+             "return"    : "%-12s : %s :%s ret %s " % (module,"@line@",indents,where),
              }
     
     if not which in strings:
@@ -316,14 +320,14 @@ def def_trace(which, name, param_list, return_types, globals_ ):
     
     if which in ("function","procedure"):
         
-        p1,p2=get_parameter_value_strings(param_list,globals_,p1,p2)
+        p1,p2=get_parameter_value_strings(param_list,globals_,p1,p2  )
               
     elif which=="return":
         
         if return_types != None:
-            p1,p2=get_return_value_string(param_list, return_types, globals_, p1,p2 )
+            p1,p2=get_return_value_string(param_list, return_types, globals_, p1,p2  )
         else:
-            p1,p2=get_return_string(globals_,p1,p2)
+            p1,p2=get_return_string(globals_,p1,p2  )
             
     else:
         
@@ -355,27 +359,27 @@ def check_proc(line):
     except:
         return False 
 #------------------------------------------------------------------------------------------------------------     
-def get_to_matching_brace(code_block):
+def split_at_matching_brace(code_block):
 
     br=1
     st=0
     en=0
     comment=0
     while True:
-	if code_block[en-2:en]=="--":
+        if code_block[en-2:en]=="--":
             comment=1
-	if code_block[en]=="\n":
+        if code_block[en]=="\n":
             comment=0
-
-	if comment==0:
-	    if code_block[en]=="{":
-		br+=1
-	    if code_block[en]=="}": 
-		br-=1
-        if br==0:
-            body=code_block[st:en+1]
-            rest=code_block[en+1:]
-            return body,rest
+    
+        if comment==0:
+            if code_block[en]=="{":
+                br+=1
+            if code_block[en]=="}": 
+                br-=1
+            if br==0:
+                body=code_block[st:en+1]
+                rest=code_block[en+1:]
+                return body,rest
         en+=1
 
 #------------------------------------------------------------------------------------------------------------     
@@ -401,7 +405,7 @@ def check(window):
     
     return None 
 #------------------------------------------------------------------------------------------------------------     
-def process(parsers,parent,code_block,parent_name,globals_,parent_ret_types):
+def process(parsers,parent,code_block,parent_name,globals_,parent_ret_types,indent):
     
     '''  
     check a three line lookahead from the current line for class|function|procedure defs 
@@ -412,9 +416,13 @@ def process(parsers,parent,code_block,parent_name,globals_,parent_ret_types):
     
     this will be recursively called when handling nested statement bodies 
     '''
+    global indentmode 
     
+    if indentmode:
+        indent+=1
+        
     out=[] 
-    debug("%s %s " % (parent,parent_name))
+    debug("process %s %s " % (parent,parent_name))
     
     while len(code_block)>0:
        
@@ -438,7 +446,7 @@ def process(parsers,parent,code_block,parent_name,globals_,parent_ret_types):
                         debug("parsed "+line_match+"\n"+str(window)+"\n"+matched)
                         ret_values=parse_result["return_values"] 
                         # add trace line 
-                        out.append(def_trace(line_match,parent_name,ret_values,parent_ret_types,globals_))         
+                        out.append(def_trace(line_match,parent_name,ret_values,parent_ret_types,globals_,indent))         
                         out.append(code_block[0:start]+matched)     #keeps indent 
                         code_block=code_block[end:]
                         namespace=parent_name
@@ -448,7 +456,7 @@ def process(parsers,parent,code_block,parent_name,globals_,parent_ret_types):
                 elif parent=="procedure":
                     
                     # add trace line 
-                    out.append(def_trace(line_match,parent_name,None,None,globals_))         
+                    out.append(def_trace(line_match,parent_name,None,None,globals_,indent))         
                     
             else:
                  
@@ -462,12 +470,12 @@ def process(parsers,parent,code_block,parent_name,globals_,parent_ret_types):
                     namespace=parent_name+dot+mystr(parse_result[line_match])
                     params=parse_result["parameter_list"] if line_match in ("procedure","function") else None
                     # add trace line 
-                    out.append(def_trace(line_match,namespace,params,None,globals_))
+                    out.append(def_trace(line_match,namespace,params,None,globals_,indent))
                     ret_types=parse_result["return_types"] if line_match=="function" else None
-                    body,rest=get_to_matching_brace(code_block)
+                    body,rest=split_at_matching_brace(code_block)
                     code_block=rest
                     # recursive call handles nested block 
-                    out.append( process(parsers,line_match,body,namespace,globals_,ret_types) )
+                    out.append( process(parsers,line_match,body,namespace,globals_,ret_types, indent) )
                     match=1
                     break
 
@@ -485,7 +493,7 @@ def sub_line_numbers(l):
     
     ll=l.splitlines()
     for i in range(0,len(ll)):
-        ll[i]=re_line.sub(str(i+1),ll[i])
+        ll[i]=re_line.sub("%-5s" % str(i+1),ll[i])
        
     return "\n".join(ll)
  
@@ -537,36 +545,43 @@ class Test(unittest.TestCase):
         for s in NHtrace_tests.__dict__.keys():
             if s[0:2]!="__" and s[0:3]!="out":
                 print >>sys.stderr, (s)
-                res=process( parsers,"toplevel", NHtrace_tests.__dict__[s] , s , [], None)
+                res=process( parsers,"toplevel", NHtrace_tests.__dict__[s] , s , [], None, 0 )
                 res=sub_line_numbers(res)
                 expected=NHtrace_tests.__dict__["out_"+s]
                 d=diff(res,expected)
-                assert len(d)==0, "%s fail : \n%s " % (s,d)
+                assert len(d)==0, "%s fail : \n%s  " % (s,d)
                 
 #------------------------------------------------------------------------------------------------------------ 
 def vgen(g_module):
 
     ''' attempt to compile the traced module and return success/failure  ''' 
-
+    
+    global checkmode 
+    
+    if os.name == 'nt':
+        return True
+    if checkmode==False:
+        return True 
+    
     home=os.getenv("HOME","")
     if home != "":
         cwd=os.getcwd()
-	base=os.path.basename(g_module)
-	tmp=os.path.join(home,base)
-	shutil.copyfile(g_module,tmp)
-        os.chdir(home)
-	try:
-	    check_output("vgen -d sunres %s" % g_module)
-	    vmc=os.path.basename(g_module).split(".")[0]+".vmc"
-	    os.remove(vmc)
-	    os.remove(tmp)
-	    os.chdir(cwd)    
-	except StandardError,e:
-	    print str(e)+"\n"
-	    print "Compile failed for %s " % g_module
-	    os.remove(tmp)
-	    os.chdir(cwd)    
-	    return False
+    base=os.path.basename(g_module)
+    tmp=os.path.join(home,base)
+    shutil.copyfile(g_module,tmp)
+    os.chdir(home)
+    try:
+        check_output("vgen -d sunres %s" % g_module)
+        vmc=os.path.basename(g_module).split(".")[0]+".vmc"
+        os.remove(vmc)
+        os.remove(tmp)
+        os.chdir(cwd)    
+    except StandardError,e:
+        print str(e)+"\n"
+        print "Compile failed for %s " % g_module
+        os.remove(tmp)
+        os.chdir(cwd)    
+        return False
 
     return True
 
@@ -580,7 +595,7 @@ def check_output(*popenargs, **kwargs):
     output, err  = process.communicate()
     retcode = process.poll()
     if retcode:
-	raise StandardError(err)
+        raise StandardError(err)
     return output
 
 #--------------------------------------------------------------------------------------------------------------------           
@@ -589,14 +604,19 @@ def check_output(*popenargs, **kwargs):
 
 def main():
     
-    global debugmode 
+    global debugmode, checkmode , indentmode
+    
     optparse = OptionParser()
     optparse.add_option("-d", "--debug", action="store_true", dest="debug", default=False)
     optparse.add_option("-r", "--restore", action="store_true", dest="restore", default=False)
     optparse.add_option("-g", "--global", dest="globalnames", default=None )
     optparse.add_option("-t", "--test", action="store_true", dest="test", default=False)
+    optparse.add_option("-c", "--check", action="store_true", dest="check", default=False )
+    optparse.add_option("-i", "--indent", action="store_true", dest="indent", default=False )
     (options, args) = optparse.parse_args()
     debugmode=options.debug
+    checkmode=options.check
+    indentmode=options.indent
     globals_=get_globals_to_watch(options.globalnames)
     
     parsers={ 
@@ -609,27 +629,27 @@ def main():
             }
     
     if options.test:
-        #unittest.main(argv=sys.argv[:1])
-	res=process(parsers,"module",NHtrace_tests.adhoc,"test",[],None) 
-	print "test:",res 
+        unittest.main(argv=sys.argv[:1])
+        #res=process(parsers,"module",NHtrace_tests.adhoc,"test",[],None) 
+        #print "test:",res 
     else:
         for f in args:
             
             if options.restore:
                 restore_saved(f)
             else:
-		print "Adding trace to %s" % f 
+                print "Adding trace to %s" % f 
                 backup=backup_source(f)
                 text=open(f,"r").read()
                 namespace=f.split(".")[0]
-                res=process( parsers,"module", text , namespace, globals_, None)
+                res=process( parsers,"module", text , namespace, globals_, None, 0)
                 res=sub_line_numbers(res)
                 with open(f+".out","w") as outf:
                     print >>outf,res 
                 shutil.move(f+".out",f)
-		if vgen(f):
-			print "Trace added to %s : backup is %s " % (f, backup)
-		
+                if vgen(f):
+                    print "Trace added to %s : backup is %s " % (f, backup)
+            
                 
 #------------------------------------------------------------------------------------------------------------------------------        
 #------------------------------------------------------------------------------------------------------------------------------        
@@ -638,4 +658,3 @@ def main():
 if __name__=="__main__":
   
     main()
-
